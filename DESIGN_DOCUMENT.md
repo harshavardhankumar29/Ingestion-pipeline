@@ -1,100 +1,133 @@
-# Part 1: Anti-Bot Resilient Data Ingestion Engine & Strategy
+# Resilient Job Ingestion Pipeline — Technical Design Document
 
-## Executive Summary
-This project implements an end-to-end resilient job data ingestion engine engineered to extract job listings reliably while adhering strictly to anti-bot detection mitigation, rate limiting, data drift protection, and ethical boundaries.
-
-Per the **Scope Guardrail**, our working engine runs against a low-risk public source (`https://remoteok.com/api`) with full anti-bot evasion and features an automated snapshot cache and synthetic payload fallback generator to demonstrate complete fault tolerance without breaching real-world platform Terms of Service.
+> **Problem Statement**: Extract job listings from protected platforms without getting blocked, handle failures gracefully, maintain a reliable fallback plan, and respect ethical boundaries.
 
 ---
 
-## Architecture Overview
+## 🎯 Executive Summary (In 30 Seconds)
+
+1. **Anti-Bot Defense**: Bypasses detection using randomized request delays (jitter), rotating real browser User-Agents, and injecting modern browser client hints (`Sec-Fetch-*`, `Sec-Ch-Ua`).
+2. **Resilience & Plan B**: Uses a **Circuit Breaker** paired with an in-memory **Snapshot Cache**. If a source fails or blocks requests, the engine automatically serves the latest real cached jobs instead of crashing or returning empty responses.
+3. **Data Drift & Deduplication**: Tolerant **Zod schemas** automatically handle renamed keys (`position` $\rightarrow$ `title`), while normalized **MD5 hashes** prevent duplicate listings across runs.
+4. **Ethics & Safety**: Complies with the **Scope Guardrail** by running against a public open source (`https://remoteok.com/api`) without scraping private user accounts or collecting PII.
+
+---
+
+## 📐 High-Level Architecture
 
 ```mermaid
 flowchart TD
-    A[Client / Scheduler Trigger] --> B[Express Server /api/jobs]
-    B --> C[Pipeline Orchestrator]
-    C --> D{Circuit Breaker State}
+    A[Client / Trigger GET /api/jobs] --> B[API Server & Orchestrator]
+    B --> C{Circuit Breaker State?}
     
-    D -- CLOSED / HALF-OPEN --> E[Paced Fetcher Engine]
-    E -->|Rotated UA + Sec-Fetch Headers + Jitter Delay| F[Primary Target: RemoteOK API]
+    %% Happy Path
+    C -- CLOSED / HALF-OPEN --> D[Paced Fetcher Engine]
+    D -->|Rotated UA + Sec-Fetch Headers + Jitter| E[Primary Source: RemoteOK API]
     
-    F -- Success 200 OK --> G[Update Snapshot Cache]
-    G --> H[Zod Schema Validator & Data Drift Shield]
+    E -- 200 OK --> F[Save to Snapshot Cache]
+    F --> G[Zod Schema Validation & Alias Mapping]
     
-    F -- 429 / 5xx / Network Failure --> I[Exponential Backoff Retry]
-    I -->|Retries Exhausted| J[Trip Circuit Breaker to OPEN]
+    %% Failure & Plan B Path
+    E -- 429 / 5xx / Timeout --> H[Exponential Backoff Retry]
+    H -->|3 Failures in a row| I[Trip Circuit Breaker to OPEN]
     
-    D -- OPEN --> K{Snapshot Cache Available?}
-    J --> K
-    K -- Yes --> L[Serve Cached Real Snapshot Data]
-    K -- No --> M[Serve Synthetic Sandbox Payload]
+    C -- OPEN --> J{Cached Real Data Exists?}
+    I --> J
+    J -- Yes --> K[Serve Cached Real Snapshot Data]
+    J -- No --> L[Serve Compliant Sandbox Payload]
     
-    L --> H
-    M --> H
+    K --> G
+    L --> G
     
-    H --> N[MD5 Cross-Run Content Deduplicator]
-    N --> O[Normalized Job Output + Observability Metrics]
+    %% Output
+    G --> M[MD5 Deduplication Engine]
+    M --> N[Normalized Clean Output + /api/metrics Telemetry]
 ```
 
 ---
 
-## 1. Detection Surface & Countermeasures
+## 1. The Detection Surface (What Gives Bots Away & How We Evade It)
 
-Automated clients attempting to ingest data from anti-bot protected platforms (e.g., LinkedIn, Indeed, Naukri, Wellfound) expose several technical fingerprints:
+Anti-bot platforms (LinkedIn, Indeed, Naukri, Cloudflare, DataDome) flag automated clients through specific technical signals. Here is how our architecture counters each:
 
-| Detection Vector | How Anti-Bot Systems Detect It | Implemented Countermeasure | Code Reference |
-| :--- | :--- | :--- | :--- |
-| **HTTP Header Signatures** | Default/bare HTTP client headers missing standard browser headers (`Sec-Fetch-*`, `Sec-Ch-Ua`, `Accept-Language`). | Explicit injection of full browser-standard header suites (`Sec-Ch-Ua`, `Sec-Fetch-Dest: empty`, `Sec-Fetch-Mode: cors`, `Sec-Fetch-Site: same-origin`). | [`src/fetcher/fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts) |
-| **User-Agent Fingerprinting** | Static, outdated, or default Node/Axios User-Agent strings. | **Rotational User-Agent Pool**: Automatically selects from a curated pool of modern macOS/Windows desktop browsers (Chrome, Firefox, Safari, Edge) on every request. | [`src/fetcher/fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts) |
-| **Request Timing & Velocity** | Exact periodic intervals (e.g., exactly 1000ms) or superhuman speeds. | **Randomized Jitter Pacing**: Enforces `baseDelayMs + Math.random() * 1000ms` randomized human-like delay between requests. | [`src/fetcher/fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts) |
-| **IP Rate-Limiting & WAF Blocks** | High request bursts from cloud IPs triggering HTTP 429 / 503 blocks. | **Exponential Backoff (`baseDelay * 2^attempt + jitter`)** combined with automatic **Circuit Breaker isolation**. | [`src/resilience/circuitBreaker.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/resilience/circuitBreaker.ts) |
-| **Session & Behavioral Patterns** | Direct deep-linking to internal APIs without session establishment. | Stateless endpoints are utilized without binding to personal user credentials, eliminating account ban risks. | [`src/pipeline/orchestrator.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/pipeline/orchestrator.ts) |
+| # | Detection Vector | Why Bots Get Caught | Our Countermeasure | Code Reference |
+|---|:---|:---|:---|:---|
+| **1** | **HTTP Header Signatures** | Default tools (`curl`, `axios`, `fetch`) omit modern browser headers. | We inject full browser headers: `Sec-Ch-Ua`, `Sec-Fetch-Dest`, `Sec-Fetch-Mode`, `Sec-Fetch-Site`, `Accept-Language`, and `DNT`. | [`fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts#L23-L40) |
+| **2** | **User-Agent Fingerprinting** | Using a single, static, or headless User-Agent string. | **Rotational Pool**: Every request randomly selects from modern desktop browsers (Chrome, Firefox, Safari, Edge on Windows/macOS). | [`fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts#L14-L18) |
+| **3** | **Request Velocity & Timing** | Sending requests at exact periodic intervals (e.g. exactly every 1000ms). | **Human Jitter**: Adds randomized pacing delays (`1500ms + random(0-1000ms)`) before every fetch. | [`fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts#L48-L51) |
+| **4** | **IP Rate-Limiting & WAF Blocks** | Slamming servers after a `429 Too Many Requests` or `503`. | **Exponential Backoff**: Backs off exponentially (`delay * 2^attempt + jitter`) before retrying. | [`fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts#L68-L77) |
+| **5** | **Account & Session Poisoning** | Automated actions tied to user logins get accounts banned. | **Stateless Public Ingestion**: Operates without tied credentials, eliminating account burn risks. | [`orchestrator.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/pipeline/orchestrator.ts) |
 
 ---
 
-## 2. Ingestion Strategy & Plan B
+## 2. Ingestion Strategy & Plan B (What Happens When Blocked)
 
 ### Primary Ingestion Strategy
-1. **Request Pacing & Jitter**: Avoids bursting by enforcing mandatory sleep windows + randomized jitter (`1.5s - 2.5s`) per request cycle.
-2. **Dynamic Header & Identity Emulation**: Rotates realistic browser headers and client hints per request to prevent fingerprint clustering.
-3. **Exponential Backoff**: On `429 Too Many Requests`, `5xx` server responses, or network timeouts, the client backs off exponentially before retrying.
+* Requests are paced with **randomized human jitter** to stay below WAF thresholds.
+* Headers and User-Agents rotate per request to prevent fingerprint clustering.
+* Transient network errors or rate-limits trigger **exponential backoff retries**.
 
-### Plan B (Circuit Breaker + Smart Fallback Engine)
-When a primary data target implements strict IP blocks, CAPTCHA walls, or anti-bot shifts:
-- The **Circuit Breaker** (`src/resilience/circuitBreaker.ts`) tracks consecutive failures.
-- Once **3 consecutive failures** occur, the circuit transitions to `OPEN` for a **30-second cooldown period**.
-- **Smart Fallback Caching**: Rather than returning empty data or a single dummy item, the engine automatically serves the **last known successful snapshot** from memory, preserving downstream availability.
-- If no cache exists (e.g. cold-start failure), the engine routes to a **Synthetic Sandbox Payload Generator**.
-- After the 30-second cooldown, the circuit transitions to `HALF_OPEN` to probe the primary source safely with a single canary request.
+### Plan B: The Circuit Breaker & Smart Fallback
+If a source hard-blocks us or goes offline, we do not let downstream consumers crash:
 
----
+```
+[Normal Operation] ──(3 consecutive failures)──> [Circuit OPEN (30s Cooldown)]
+      ▲                                                    │
+      │                                             (Routes all requests to
+(Canary probe succeeds)                             Snapshot Cache / Sandbox)
+      │                                                    │
+[Circuit HALF-OPEN] <──────(After 30 seconds)──────────────┘
+```
 
-## 3. Pipeline Resilience, Observability & Data Drift Protection
-
-| Potential Failure Mode | Defensive Architecture & Mechanism |
-| :--- | :--- |
-| **Source Schema / Key Renaming Overnight** | **Zod Schema Tolerant Parsing** (`src/schema/jobSchema.ts`): Uses `.safeParse()`. If fields are renamed (e.g. `position` instead of `title`), transformations automatically remap aliases with fallback defaults. |
-| **Corrupted or Partial Payloads** | Malformed entries increment the `invalidCount` metric without throwing errors or crashing the pipeline. |
-| **Duplicate Ingestion Across Runs** | **MD5 Content Hashing** (`src/pipeline/orchestrator.ts`): Computes normalized `company:title` hashes stored in a bounded cross-run set to prevent redundant ingestion. |
-| **Silent Pipeline Failures** | **Observability Endpoint (`/api/metrics`)**: Exposes real-time telemetry including Circuit Breaker state transitions, failure counters, trip history, and deduplication cache statistics. |
-
----
-
-## 4. Technical & Ethical Boundaries (Where We Stop)
-
-### Personal & Technical Lines
-1. **No Authenticated Scraping of Private Data**: We never bypass login walls using fake user accounts or automated session hijacking on platforms like LinkedIn or Indeed.
-2. **Respecting `robots.txt` & Rate Limits**: Rate-limiting and pacing are strictly bounded to prevent Denial of Service (DoS) or unnecessary infrastructure load.
-3. **Adherence to Scope Guardrail**: Live ingestion is restricted to public open job board feeds and sandbox targets.
-4. **Data Minimization**: We ingest only public metadata required for job discovery (Title, Company, Location, URL, Tags) and explicitly discard Personally Identifiable Information (PII).
+1. **Circuit Breaker State Machine**:
+   * `CLOSED`: Primary source is healthy. All requests hit live API.
+   * `OPEN`: After **3 consecutive failures**, the circuit trips for **30 seconds**. Live calls are completely paused to let rate-limit windows cool down.
+   * `HALF_OPEN`: After 30 seconds, a single canary request probes the primary source. If it succeeds, the circuit resets to `CLOSED`.
+2. **Smart Fallback Caching**:
+   * During `OPEN` state, the engine serves the **latest known good data snapshot** from memory (`FALLBACK_CACHE`).
+   * If the pipeline was just booted with no cache, it returns a schema-compliant synthetic dataset (`FALLBACK_SYNTHETIC`).
 
 ---
 
-## Codebase & Test Suite Architecture
+## 3. Resilience, Data Drift & Observability
 
-- **Fetcher Engine (UA Rotation & Browser Headers)**: [`src/fetcher/fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts)
-- **Resilience & Circuit Breaker**: [`src/resilience/circuitBreaker.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/resilience/circuitBreaker.ts)
-- **Schema & Data Drift Handling**: [`src/schema/jobSchema.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/schema/jobSchema.ts)
-- **Pipeline Orchestrator & Deduplication**: [`src/pipeline/orchestrator.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/pipeline/orchestrator.ts)
-- **API Server & Observability Endpoint**: [`src/index.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/index.ts)
-- **Automated Test Suite (10 Tests)**: [`tests/pipeline.test.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/tests/pipeline.test.ts)
+### A. Data Drift Protection (Schema Changes Overnight)
+Websites frequently rename fields (e.g. `position` instead of `title`, or numeric `id` instead of string).
+* **Zod Schema Aliasing** ([`jobSchema.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/schema/jobSchema.ts)):
+  ```typescript
+  // Transforms legacy or drifted fields automatically:
+  title: data.title || data.position || "Untitled Position"
+  ```
+* **Non-Blocking Parsing**: Corrupted items increment `invalidCount` in telemetry instead of throwing an unhandled exception.
+
+### B. Cross-Run Deduplication
+* Generates normalized MD5 hashes of `company:title` (trimmed and lowercased).
+* Stores hashes in a bounded cache (`MAX_GLOBAL_HASH_ENTRIES = 10000`) so calling `/api/jobs` repeatedly never ingests duplicates.
+
+### C. Preventing Silent Failures (Observability)
+* The **[`/api/metrics`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/index.ts#L18-L27)** endpoint gives real-time visibility:
+  * Current Circuit Breaker state (`CLOSED`, `OPEN`, `HALF_OPEN`)
+  * Total executions, primary successes vs failures, and trip counts
+  * Last successful fetch timestamp and deduplication cache size
+
+---
+
+## 4. Ethical & Technical Boundaries (Where We Stop)
+
+| Boundary | Policy | Technical Implementation |
+|:---|:---|:---|
+| **No Private Data Scraping** | We never bypass login walls, solve CAPTCHAs for private data, or use fake accounts. | Stateless client targeting public endpoints only. |
+| **Data Minimization** | Collect only job metadata required for discovery (Title, Company, URL, Location, Tags). | Explicitly discard any PII (personal emails, recruiter phone numbers). |
+| **Infrastructure Respect** | Never cause Denial of Service (DoS) or heavy server load. | Strict request delays (1.5s+), circuit breaker cooldowns, and backoffs. |
+| **Scope Guardrail** | Adhere strictly to assignment guardrails. | Live demo runs against an open, low-risk job API (`RemoteOK`). |
+
+---
+
+## 📂 Source Code & Test Suite Map
+
+* **Fetcher & Evasion**: [`src/fetcher/fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts)
+* **Circuit Breaker Engine**: [`src/resilience/circuitBreaker.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/resilience/circuitBreaker.ts)
+* **Zod Schema & Drift Shield**: [`src/schema/jobSchema.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/schema/jobSchema.ts)
+* **Orchestration & Dedup**: [`src/pipeline/orchestrator.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/pipeline/orchestrator.ts)
+* **API Endpoints**: [`src/index.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/index.ts)
+* **Automated Test Suite (10 Tests)**: [`tests/pipeline.test.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/tests/pipeline.test.ts) (`npm test`)
