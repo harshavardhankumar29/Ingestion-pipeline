@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: ingestion-pipeline
+    env: node
+    buildCommand: npm install && npx tsc
+    startCommand: npx tsx src/index.ts
+    envVars:
+      - key: PORT
+        value: 3000
