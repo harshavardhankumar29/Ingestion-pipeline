@@ -1,10 +1,12 @@
 {
   "name": "ingestion-pipeline",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Anti-Bot Resilient Data Ingestion Engine",
+  "main": "src/index.ts",
   "scripts": {
-    "test": "tsx --test tests/**/*.test.ts"
+    "start": "tsx src/index.ts",
+    "dev": "tsx src/index.ts",
+    "build": "tsc"
   },
   "keywords": [],
   "author": "",

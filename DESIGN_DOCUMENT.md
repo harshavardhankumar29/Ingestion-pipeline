@@ -123,11 +123,10 @@ Websites frequently rename fields (e.g. `position` instead of `title`, or numeri
 
 ---
 
-## 📂 Source Code & Test Suite Map
+## 📂 Source Code Architecture Map
 
-* **Fetcher & Evasion**: [`src/fetcher/fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts)
+* **Fetcher & Anti-Bot Evasion**: [`src/fetcher/fetcher.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/fetcher/fetcher.ts)
 * **Circuit Breaker Engine**: [`src/resilience/circuitBreaker.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/resilience/circuitBreaker.ts)
 * **Zod Schema & Drift Shield**: [`src/schema/jobSchema.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/schema/jobSchema.ts)
-* **Orchestration & Dedup**: [`src/pipeline/orchestrator.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/pipeline/orchestrator.ts)
-* **API Endpoints**: [`src/index.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/index.ts)
-* **Automated Test Suite (10 Tests)**: [`tests/pipeline.test.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/tests/pipeline.test.ts) (`npm test`)
+* **Orchestration & Deduplication**: [`src/pipeline/orchestrator.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/pipeline/orchestrator.ts)
+* **API Routes & Endpoints**: [`src/routes/`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/routes) & [`src/index.ts`](file:///Users/harsha/Desktop/ACYDON/ingestion-pipeline/src/index.ts)

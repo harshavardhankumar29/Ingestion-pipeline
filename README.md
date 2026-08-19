@@ -21,8 +21,6 @@ An end-to-end resilient job data ingestion engine engineered to extract job list
   * Bounded MD5 content hash cache (`company:title`) to prevent duplicate ingestion across multiple runs.
 * **Real-Time Observability**:
   * Dedicated `/api/metrics` endpoint exposing telemetry (circuit breaker status, failure counters, trip history, cache health).
-* **Automated Test Suite**:
-  * 10 automated unit and resilience tests covering all core components (`npm test`).
 
 ---
 
@@ -38,15 +36,11 @@ npm install
 cp .env.example .env
 ```
 
-### 3. Run Automated Tests
+### 3. Start the Server
 ```bash
-npm test
+npm start
 ```
-
-### 4. Start the Server
-```bash
-npx tsx src/index.ts
-```
+*(Or `npm run dev` for development)*
 
 ---
 
@@ -80,15 +74,14 @@ curl -s http://localhost:3000/api/health | python3 -m json.tool
 ```text
 ingestion-pipeline/
 ├── DESIGN_DOCUMENT.md      # Comprehensive technical design doc & strategy
-├── Dockerfile              # Container deployment configuration
-├── render.yaml             # Render cloud deployment specification
+├── .env.example            # Environment configuration template
 ├── src/
 │   ├── config/             # Environment & anti-bot configuration
 │   ├── fetcher/            # Anti-bot pacing, UA rotation & header injection
 │   ├── pipeline/           # Ingestion orchestrator & deduplication
 │   ├── resilience/         # Circuit breaker state machine & telemetry
+│   ├── routes/             # Clean API route handlers (health, jobs, metrics)
 │   ├── schema/             # Zod schema validation & data drift handling
-│   └── index.ts            # Express API server & routes
-└── tests/
-    └── pipeline.test.ts    # Automated resilience & unit test suite
+│   └── index.ts            # Express API server entry point
+└── tsconfig.json           # TypeScript configuration
 ```
